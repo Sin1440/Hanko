@@ -460,25 +460,36 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const MM_PT = 72 / 25.4;      // 1mm = 2.8346pt
 const EMU_MM = 36000;         // 1mm = 36000 EMU
 
+// 外部の部品は、改ざんされていないことを integrity（SRIハッシュ）で確認してから使う。
+// ハッシュが一致しない場合、ブラウザは部品を実行しない。
 const LIBS = {
-  jszip: 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
-  pdflib: 'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js',
-  pdfjs: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
-  docxpreview: ['https://cdn.jsdelivr.net/npm/docx-preview@0.4.1/dist/docx-preview.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/docx-preview/0.4.1/docx-preview.min.js']
+  jszip: { url: 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js', sri: 'sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG' },
+  pdflib: { url: 'https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js', sri: 'sha384-weMABwrltA6jWR8DDe9Jp5blk+tZQh7ugpCsF3JwSA53WZM9/14PjS5LAJNHNjAI' },
+  pdfjs: { url: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js', sri: 'sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e' },
+  docxpreview: { url: 'https://cdn.jsdelivr.net/npm/docx-preview@0.4.1/dist/docx-preview.min.js', sri: 'sha384-DifWB1GSGsQgwTegPEbGdEMnGZpmfhUsx9A3WuHv+rfQVCFXMhawW/v4AZcP1FzL' }
 };
+const PDF_WORKER = { url: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js', sri: 'sha384-SnzOobpRMLXZ52iJvZm/C0fYw0OQemTXzTjIsdsfMcrCtCEe9qgzxTd3RSklO5x2' };
 const CMAP_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/';
 const _loaded = {};
 function loadLib(key) {
   if (_loaded[key]) return _loaded[key];
-  const urls = [].concat(LIBS[key]);
-  return (_loaded[key] = (async () => {
-    for (const u of urls) {
-      try { await new Promise((res, rej) => { const s = document.createElement('script'); s.src = u; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); return; }
-      catch (e) { /* 次の配信元を試す */ }
-    }
-    delete _loaded[key];
-    throw new Error('部品の読み込みに失敗しました。インターネット接続を確認してください。');
-  })());
+  const { url, sri } = LIBS[key];
+  return (_loaded[key] = new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = url; s.integrity = sri; s.crossOrigin = 'anonymous';
+    s.onload = res;
+    s.onerror = () => { delete _loaded[key]; s.remove(); rej(new Error('部品の読み込みに失敗しました。インターネット接続を確認してください。')); };
+    document.head.appendChild(s);
+  }));
+}
+// PDF表示用のワーカーも、ハッシュを確認してから読み込む
+let _workerUrl = null;
+async function pdfWorkerUrl() {
+  if (_workerUrl) return _workerUrl;
+  const r = await fetch(PDF_WORKER.url, { integrity: PDF_WORKER.sri, mode: 'cors' });
+  if (!r.ok) throw new Error('部品の読み込みに失敗しました。インターネット接続を確認してください。');
+  _workerUrl = URL.createObjectURL(new Blob([await r.text()], { type: 'text/javascript' }));
+  return _workerUrl;
 }
 
 let toastTimer;
@@ -1378,9 +1389,9 @@ async function busy(fn) {
 /* ------------------------------- PDF ------------------------------- */
 async function openPdf(file) {
   await Promise.all([loadLib('pdfjs'), loadLib('pdflib')]);
-  pdfjsLib.GlobalWorkerOptions.workerSrc = LIBS.pdfjs.replace('pdf.min.js', 'pdf.worker.min.js');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = await pdfWorkerUrl();
   pdf.bytes = new Uint8Array(await file.arrayBuffer());
-  const d = await pdfjsLib.getDocument({ data: pdf.bytes.slice(), cMapUrl: CMAP_URL, cMapPacked: true }).promise;
+  const d = await pdfjsLib.getDocument({ data: pdf.bytes.slice(), cMapUrl: CMAP_URL, cMapPacked: true, isEvalSupported: false }).promise;
   Object.assign(pdf, { doc: d, vps: [], els: [], stamps: [], sel: null, nid: 1 });
   const host = $('#pdfPages'); host.innerHTML = '';
   const pages = [];
